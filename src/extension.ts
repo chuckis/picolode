@@ -1,159 +1,238 @@
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
-import { execFile } from 'child_process';
+import { spawn } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 
-// This method is called when your extension is activated
-// Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
+  const outputChannel = vscode.window.createOutputChannel("PicoLisp");
 
-	// Use the console to output diagnostic information (console.log) and errors (console.error)
-	// This line of code will only be executed once when your extension is activated
-	console.log('Congratulations, your extension "picolode" is now active!');
+  // Function to execute PicoLisp code via stdin
+  function executePicoLisp(code: string): Promise<{ stdout: string; stderr: string; error?: Error }> {
+    return new Promise((resolve) => {
+      const config = vscode.workspace.getConfiguration("picolode");
+      const pilPath = config.get<string>("picolode.pilPath") || "pil";
+      const timeout = config.get<number>("picolode.timeout") || 5000;
 
-	// Auto-associate .l files with the picolisp language id while the extension is active
-	try {
-		const config = vscode.workspace.getConfiguration();
-		const assoc = config.get<any>('files.associations') || {};
-		if (assoc['*.l'] !== 'picolisp') {
-			// Update workspace configuration if possible, otherwise update global
-			config.update('files.associations', { ...assoc, '*.l': 'picolisp' }, vscode.ConfigurationTarget.Workspace).then(() => {
-				vscode.window.showInformationMessage("Associated '*.l' files with 'picolisp' for this workspace. (Undo available)", 'Undo').then(selection => {
-					if (selection === 'Undo') {
-						config.update('files.associations', assoc, vscode.ConfigurationTarget.Workspace);
-					}
-				});
-			}, () => {
-				// ignore failures silently
-			});
-		}
-	} catch (e) {
-		// best-effort only
-	}
+      const child = spawn(pilPath, [], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: true
+      });
 
-	// Hello world command (kept for compatibility)
-	const disposableHello = vscode.commands.registerCommand('picolode.helloWorld', () => {
-		vscode.window.showInformationMessage('Hello World from picolode!');
-	});
-	context.subscriptions.push(disposableHello);
+      let stdout = '';
+      let stderr = '';
+      let timeoutId: NodeJS.Timeout;
 
-	// Decoration type used to show inline result after the evaluated expression
-	const resultDecoration = vscode.window.createTextEditorDecorationType({
-		after: {
-			margin: '0 0 0 1rem',
-			color: new vscode.ThemeColor('editorCodeLens.foreground')
-		}
-	});
+      // Set timeout
+      timeoutId = setTimeout(() => {
+        child.kill('SIGTERM');
+        resolve({ 
+          stdout: '', 
+          stderr: 'Timeout exceeded', 
+          error: new Error('Process timeout') 
+        });
+      }, timeout);
 
-	// Output channel for debug logs
-	const output = vscode.window.createOutputChannel('picolode');
-	context.subscriptions.push(output);
+      child.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
 
-	// Register the evaluation command
-	const disposableEval = vscode.commands.registerCommand('picolode.evalSelection', async () => {
-		const editor = vscode.window.activeTextEditor;
-		if (!editor) {
-			vscode.window.showErrorMessage('No active editor');
-			return;
-		}
+      child.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
 
-		const doc = editor.document;
-		let code: string;
-		let range: vscode.Range;
+      child.on('close', (code) => {
+        clearTimeout(timeoutId);
+        resolve({ stdout, stderr, error: code !== 0 ? new Error(`Exit code: ${code}`) : undefined });
+      });
 
-		if (!editor.selection.isEmpty) {
-			range = new vscode.Range(editor.selection.start, editor.selection.end);
-			code = doc.getText(range);
-		} else {
-			const line = editor.selection.active.line;
-			range = doc.lineAt(line).range;
-			code = doc.lineAt(line).text;
-		}
+      child.on('error', (error) => {
+        clearTimeout(timeoutId);
+        resolve({ stdout, stderr, error });
+      });
 
-		if (!code.trim()) {
-			vscode.window.showInformationMessage('Nothing to evaluate');
-			return;
-		}
+      // Send code via stdin
+      child.stdin.write(code);
+      child.stdin.write('\n(bye)\n'); // End PicoLisp session
+      child.stdin.end();
+    });
+  }
 
-		// Create a temporary file to hold the PicoLisp code
-		const tmpPath = path.join(os.tmpdir(), `vscode-picolisp-eval-${Date.now()}.l`);
-		try {
-			fs.writeFileSync(tmpPath, code, { encoding: 'utf8' });
-		} catch (err) {
-			vscode.window.showErrorMessage(`Failed to write temp file: ${err}`);
-			return;
-		}
+  // Alternative function with temporary file in safe location
+  function executePicoLispWithFile(code: string): Promise<{ stdout: string; stderr: string; error?: Error }> {
+    return new Promise(async (resolve) => {
+      try {
+        // Use extension's globalStorageUri for temporary files
+        const tempDir = context.globalStorageUri.fsPath;
+        
+        // Create directory if it doesn't exist
+        if (!fs.existsSync(tempDir)) {
+          fs.mkdirSync(tempDir, { recursive: true });
+        }
 
-	// Read configuration for pil path and timeout
-	const config = vscode.workspace.getConfiguration('picolode');
-	const pilCmd = (config.get<string>('pilPath') || 'pil').trim();
-	const timeout = Number(config.get<number>('timeout') || 5000);
-	const pilArgs = [tmpPath];
+        const tmpFile = path.join(tempDir, `temp_${Date.now()}.l`);
+        
+        // Write code to file
+        fs.writeFileSync(tmpFile, code, 'utf8');
 
-		execFile(pilCmd, pilArgs, { timeout: timeout, maxBuffer: 200 * 1024 }, (error, stdout, stderr) => {
-			// Log raw execution details for debugging
-			try {
-				output.appendLine(`exec: ${pilCmd} ${pilArgs.map(a => JSON.stringify(a)).join(' ')}`);
-				output.appendLine(`timeout(ms): ${timeout}`);
-				output.appendLine(`stdout (raw): ${JSON.stringify(stdout)}`);
-				output.appendLine(`stderr (raw): ${JSON.stringify(stderr)}`);
-				if (error) output.appendLine(`error: ${JSON.stringify(error)}`);
-			} catch (e) { /* best-effort logging */ }
+        const config = vscode.workspace.getConfiguration("picolode");
+        const pilPath = config.get<string>("picolode.pilPath") || "pil";
+        const timeout = config.get<number>("picolode.timeout") || 5000;
 
-			let outputText: string;
-			if (error) {
-				if ((error as any).code === 'ENOENT') {
-					outputText = 'pil: not found in PATH';
-				} else {
-					outputText = `Error: ${error.message}`;
-				}
-				if (stderr && !stderr.includes(outputText)) {
-					outputText += ` | ${stderr.trim()}`;
-				}
-			} else {
-				outputText = stdout.trim() || (stderr.trim() || '<no output>');
-			}
+        const child = spawn(pilPath, [tmpFile], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          shell: true
+        });
 
-			// Clean up temp file (best-effort)
-			try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+        let stdout = '';
+        let stderr = '';
+        let timeoutId: NodeJS.Timeout;
 
-			// Create a decoration showing the result after the evaluated range
-			const decoration: vscode.DecorationOptions = {
-				range: range,
-				renderOptions: {
-					after: {
-						contentText: `=> ${outputText}`
-					}
-				}
-			};
+        timeoutId = setTimeout(() => {
+          child.kill('SIGTERM');
+          // Clean up temporary file
+          try { fs.unlinkSync(tmpFile); } catch {}
+          resolve({ 
+            stdout: '', 
+            stderr: 'Timeout exceeded', 
+            error: new Error('Process timeout') 
+          });
+        }, timeout);
 
-			editor.setDecorations(resultDecoration, [decoration]);
+        child.stdout.on('data', (data) => {
+          stdout += data.toString();
+        });
 
-			// Clear decoration after some time (e.g., 10 seconds)
-			setTimeout(() => {
-				try { editor.setDecorations(resultDecoration, []); } catch { /* editor may be closed */ }
-			}, 10000);
-		});
-	});
+        child.stderr.on('data', (data) => {
+          stderr += data.toString();
+        });
 
-	context.subscriptions.push(disposableEval, resultDecoration);
+        child.on('close', (code) => {
+          clearTimeout(timeoutId);
+          // Clean up temporary file
+          try { fs.unlinkSync(tmpFile); } catch {}
+          resolve({ stdout, stderr, error: code !== 0 ? new Error(`Exit code: ${code}`) : undefined });
+        });
 
-	// Debug helper: show the current languageId for the active editor
-	const disposableShowLang = vscode.commands.registerCommand('picolode.showLanguageId', () => {
-		const editor = vscode.window.activeTextEditor;
-		if (!editor) {
-			vscode.window.showInformationMessage('No active editor');
-			return;
-		}
-		const id = editor.document.languageId;
-		vscode.window.showInformationMessage(`Active languageId: ${id}`);
-		console.log('Active languageId:', id);
-	});
-	context.subscriptions.push(disposableShowLang);
+        child.on('error', (error) => {
+          clearTimeout(timeoutId);
+          // Clean up temporary file
+          try { fs.unlinkSync(tmpFile); } catch {}
+          resolve({ stdout, stderr, error });
+        });
+
+      } catch (fsError) {
+        resolve({ stdout: '', stderr: `File error: ${fsError}`, error: fsError as Error });
+      }
+    });
+  }
+
+  // Command: output to OutputChannel
+  const runSelection = vscode.commands.registerCommand('picolode.evalSelection', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+
+    const selection = editor.selection;
+    const codeToRun = selection.isEmpty ? editor.document.getText() : editor.document.getText(selection);
+
+    if (!codeToRun.trim()) {
+      vscode.window.showWarningMessage('No code to evaluate');
+      return;
+    }
+
+    outputChannel.clear();
+    outputChannel.show(true);
+    outputChannel.appendLine('Executing PicoLisp code...');
+
+    try {
+      // Try stdin first, fallback to file if it doesn't work
+      let result = await executePicoLisp(codeToRun);
+      
+      // If stdin doesn't work, try file method
+      if (result.error && result.stderr.includes('stdin')) {
+        result = await executePicoLispWithFile(codeToRun);
+      }
+
+      if (result.error) {
+        outputChannel.appendLine(`❌ Error: ${result.error.message}`);
+        if (result.stderr) {
+          outputChannel.appendLine(result.stderr);
+        }
+      } else {
+        const output = result.stdout.trim();
+        outputChannel.appendLine(output || '<no output>');
+      }
+    } catch (error) {
+      outputChannel.appendLine(`❌ Execution failed: ${error}`);
+    }
+  });
+
+  // Command: inline output after cursor
+  const runSelectionInline = vscode.commands.registerCommand('picolode.evalSelectionInline', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+
+    const selection = editor.selection;
+    const codeToRun = selection.isEmpty ? editor.document.getText() : editor.document.getText(selection);
+
+    if (!codeToRun.trim()) {
+      vscode.window.showWarningMessage('No code to evaluate');
+      return;
+    }
+
+    try {
+      
+      let result = await executePicoLisp(codeToRun);
+      
+      
+      if (result.error && result.stderr.includes('stdin')) {
+        result = await executePicoLispWithFile(codeToRun);
+      }
+
+      let displayResult = "";
+      let isError = false;
+
+      if (result.error) {
+        displayResult = `ERROR: ${result.stderr || result.error.message}`;
+        isError = true;
+      } else {
+        displayResult = result.stdout.trim() || '<no output>';
+      }
+
+      // Limit result length for inline display
+      if (displayResult.length > 100) {
+        displayResult = displayResult.substring(0, 97) + '...';
+      }
+
+      // Create inline decoration
+      const decorationType = vscode.window.createTextEditorDecorationType({
+        after: {
+          margin: '0 0 0 1rem',
+          color: isError ? '#ff6b6b' : '#888',
+          fontStyle: 'italic'
+        }
+      });
+
+      const line = selection.isEmpty ? editor.selection.active.line : selection.end.line;
+      const range = new vscode.Range(line, Number.MAX_SAFE_INTEGER, line, Number.MAX_SAFE_INTEGER);
+      
+      editor.setDecorations(decorationType, [{
+        range,
+        renderOptions: {
+          after: { contentText: ` ${displayResult}` }
+        }
+      }]);
+
+      // Remove decoration after 8 seconds
+      setTimeout(() => {
+        editor.setDecorations(decorationType, []);
+      }, 8000);
+
+    } catch (error) {
+      vscode.window.showErrorMessage(`Execution failed: ${error}`);
+    }
+  });
+
+  context.subscriptions.push(runSelection, runSelectionInline);
 }
 
-// This method is called when your extension is deactivated
 export function deactivate() {}
