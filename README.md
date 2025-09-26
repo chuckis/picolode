@@ -97,3 +97,17 @@ You can author your README using Visual Studio Code. Here are some useful editor
 * [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
 
 **Enjoy!**
+
+## Development
+
+Two common development workflows are supported:
+
+- Webpack (recommended for debugging the packaged extension):
+	- Builds to `dist/extension.js` using the project's `webpack.config.js`.
+	- Run `npm run compile` to produce a single bundled file. For incremental builds use `npm run dev:watch`.
+
+- TypeScript emit (fast iteration of TS source):
+	- Emits compiled JS to `out/` via `tsc` (used by the test setup).
+	- Run `npm run compile-tests` or `tsc -p . --outDir out` and set `main` to `./out/extension.js` if you prefer this workflow.
+
+When actively developing, either build method works — make sure `package.json` `main` points to the artifact you use (`./dist/extension.js` for webpack, `./out/extension.js` for tsc output).

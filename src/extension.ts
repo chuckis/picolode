@@ -48,6 +48,10 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	});
 
+	// Output channel for debug logs
+	const output = vscode.window.createOutputChannel('picolode');
+	context.subscriptions.push(output);
+
 	// Register the evaluation command
 	const disposableEval = vscode.commands.registerCommand('picolode.evalSelection', async () => {
 		const editor = vscode.window.activeTextEditor;
@@ -89,7 +93,16 @@ export function activate(context: vscode.ExtensionContext) {
 	const timeout = Number(config.get<number>('timeout') || 5000);
 	const pilArgs = [tmpPath];
 
-	execFile(pilCmd, pilArgs, { timeout: timeout, maxBuffer: 200 * 1024 }, (error, stdout, stderr) => {
+		execFile(pilCmd, pilArgs, { timeout: timeout, maxBuffer: 200 * 1024 }, (error, stdout, stderr) => {
+			// Log raw execution details for debugging
+			try {
+				output.appendLine(`exec: ${pilCmd} ${pilArgs.map(a => JSON.stringify(a)).join(' ')}`);
+				output.appendLine(`timeout(ms): ${timeout}`);
+				output.appendLine(`stdout (raw): ${JSON.stringify(stdout)}`);
+				output.appendLine(`stderr (raw): ${JSON.stringify(stderr)}`);
+				if (error) output.appendLine(`error: ${JSON.stringify(error)}`);
+			} catch (e) { /* best-effort logging */ }
+
 			let outputText: string;
 			if (error) {
 				if ((error as any).code === 'ENOENT') {
