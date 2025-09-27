@@ -6,6 +6,11 @@
   "engines": {
     "vscode": "^1.104.0"
   },
+  "publisher": "chuckis",
+  "repository": {
+      "type": "git",
+      "url": "https://github.com/chuckis/picolode"
+  },
   "categories": [
     "Other"
   ],
