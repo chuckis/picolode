@@ -3,6 +3,8 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
+let docs: Record<string, string> = {};
+
 export function activate(context: vscode.ExtensionContext) {
   const outputChannel = vscode.window.createOutputChannel("PicoLisp");
 
@@ -232,7 +234,34 @@ export function activate(context: vscode.ExtensionContext) {
     }
   });
 
-  context.subscriptions.push(runSelection, runSelectionInline);
+  const docsPath = path.join(context.extensionPath, 'docs.json');
+  console.log("loading docs from", docsPath);
+  
+
+  if (fs.existsSync(docsPath)) {
+      docs = JSON.parse(fs.readFileSync(docsPath, 'utf8'));
+      // console.log("loaded", Object.keys(docs).length, "symbols");
+      vscode.window.showInformationMessage(`Docs loaded: ${Object.keys(docs).length} symbols`);
+  }
+
+    const provider = vscode.languages.registerHoverProvider('picolisp', {
+        provideHover(document, position) {
+            const range = document.getWordRangeAtPosition(position);
+            if (!range) return;
+
+            const word = document.getText(range);
+            // console.log(word);
+            if (docs[word]) {
+                const md = new vscode.MarkdownString(docs[word]);
+                md.isTrusted = true; // разрешает кликабельные ссылки
+                return new vscode.Hover(md);
+            }
+        }
+    });
+
+  
+
+  context.subscriptions.push(runSelection, runSelectionInline, provider);
 }
 
 export function deactivate() {}
